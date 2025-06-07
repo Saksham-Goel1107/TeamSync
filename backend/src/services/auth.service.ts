@@ -23,7 +23,6 @@ export const loginOrCreateAccountService = async (data: {
 
   try {
     let user = await UserModel.findOne({ email });
-    let isNewUser = false;
 
     if (!user) {
       // Create a new user if it doesn't exist
@@ -33,7 +32,6 @@ export const loginOrCreateAccountService = async (data: {
         profilePicture: picture || null,
       });
       await user.save();
-      isNewUser = true;
     }
 
     // Check if user has an account for this provider

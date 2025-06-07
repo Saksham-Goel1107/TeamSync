@@ -33,7 +33,7 @@ const accountSchema = new Schema<AccountDocument>(
   {
     timestamps: true,
     toJSON: {
-      transform(doc, ret) {
+      transform(_, ret) {
         delete ret.refreshToken;
       },
     },

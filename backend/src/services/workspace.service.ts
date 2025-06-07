@@ -138,7 +138,12 @@ export const regenerateInviteCodeService = async (
 // GET ALL MEMEBERS IN WORKSPACE
 //**************** **************/
 
-export const getWorkspaceMembersService = async (workspaceId: string) => {
+export const getWorkspaceMembersService = async (
+  workspaceId: string
+): Promise<{
+  members: any[];
+  roles: any[];
+}> => {
   // Fetch all members of the workspace
 
   const members = await MemberModel.find({

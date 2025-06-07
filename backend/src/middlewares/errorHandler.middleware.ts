@@ -9,7 +9,7 @@ const formatZodError = (res: Response, error: z.ZodError) => {
     field: err.path.join("."),
     message: err.message,
   }));
-  return res.status(HTTPSTATUS.BAD_REQUEST).json({
+  res.status(HTTPSTATUS.BAD_REQUEST).json({
     message: "Validation failed",
     errors: errors,
     errorCode: ErrorCodeEnum.VALIDATION_ERROR,
@@ -20,29 +20,47 @@ export const errorHandler: ErrorRequestHandler = (
   error,
   req,
   res,
-  next
-): any => {
-  console.error(`Error Occured on PATH: ${req.path} `, error);
+  _next
+): void => {
+  console.error(`Error Occured on PATH: ${req.path}`, {
+    message: error.message,
+    stack: error.stack,
+    statusCode: error.statusCode,
+    errorCode: error.errorCode,
+  });
+
+  // Handle BadRequestException
+  if (error.name === "BadRequestException") {
+    res.status(error.statusCode || HTTPSTATUS.BAD_REQUEST).json({
+      message: error.message,
+      errorCode: error.errorCode || ErrorCodeEnum.AUTH_INVALID_TOKEN,
+    });
+    return;
+  }
 
   if (error instanceof SyntaxError) {
-    return res.status(HTTPSTATUS.BAD_REQUEST).json({
+    res.status(HTTPSTATUS.BAD_REQUEST).json({
       message: "Invalid JSON format. Please check your request body.",
     });
+    return;
   }
 
   if (error instanceof ZodError) {
-    return formatZodError(res, error);
+    formatZodError(res, error);
+    return;
   }
 
   if (error instanceof AppError) {
-    return res.status(error.statusCode).json({
+    res.status(error.statusCode).json({
       message: error.message,
       errorCode: error.errorCode,
     });
+    return;
   }
 
-  return res.status(HTTPSTATUS.INTERNAL_SERVER_ERROR).json({
+  res.status(HTTPSTATUS.INTERNAL_SERVER_ERROR).json({
     message: "Internal Server Error",
-    error: error?.message || "Unknow error occurred",
+    error: error?.message || "Unknown error occurred",
+    errorCode: ErrorCodeEnum.INTERNAL_SERVER_ERROR,
   });
 };

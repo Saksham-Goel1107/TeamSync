@@ -4,7 +4,7 @@ import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { Strategy as LocalStrategy } from "passport-local";
 
 import { config } from "./app.config";
-import { BadRequestException, NotFoundException } from "../utils/appError";
+import { BadRequestException } from "../utils/appError";
 import { ProviderEnum } from "../enums/account-provider.enum";
 import {
   loginOrCreateAccountService,
@@ -20,7 +20,7 @@ passport.use(
       callbackURL: config.GOOGLE_CALLBACK_URL,
       passReqToCallback: true,
     },
-    async (req: Request, _accessToken, _refreshToken, profile, done) => {
+    async (_: Request, _accessToken, _refreshToken, profile, done) => {
       try {
         if (!profile._json.email) {
           throw new BadRequestException("Email is required");
