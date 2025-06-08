@@ -1,21 +1,30 @@
 import { PermissionType } from "../enums/role.enum";
-import { UnauthorizedException } from "./appError";
+import { ForbiddenException } from "./appError";
 import { RolePermissions } from "./role-permission";
 
 export const roleGuard = (
-  role: keyof typeof RolePermissions,
+  role: keyof typeof RolePermissions | null | undefined,
   requiredPermissions: PermissionType[]
-) => {
-  const permissions = RolePermissions[role];
-  // If the role doesn't exist or lacks required permissions, throw an exception
+): void => {
+  if (!role) {
+    throw new ForbiddenException("No role specified");
+  }
 
-  const hasPermission = requiredPermissions.every((permission) =>
-    permissions.includes(permission)
+  const permissions = RolePermissions[role];
+  
+  // Check if the role exists
+  if (!permissions) {
+    throw new ForbiddenException(`Invalid role: ${role}`);
+  }
+
+  // Check if role has all required permissions
+  const missingPermissions = requiredPermissions.filter(
+    permission => !permissions.includes(permission)
   );
 
-  if (!hasPermission) {
-    throw new UnauthorizedException(
-      "You do not have the necessary permissions to perform this action"
+  if (missingPermissions.length > 0) {
+    throw new ForbiddenException(
+      `Role ${role} is missing required permissions: ${missingPermissions.join(", ")}`
     );
   }
 };

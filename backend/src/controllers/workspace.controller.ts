@@ -13,7 +13,6 @@ import {
   deleteWorkspaceService,
   getAllWorkspacesUserIsMemberService,
   getWorkspaceAnalyticsService,
-  getWorkspaceByIdService,
   getWorkspaceMembersService,
   updateWorkspaceByIdService,
   regenerateInviteCodeService,
@@ -22,6 +21,9 @@ import { getMemberRoleInWorkspace } from "../services/member.service";
 import { Permissions } from "../enums/role.enum";
 import { roleGuard } from "../utils/roleGuard";
 import { updateWorkspaceSchema } from "../validation/workspace.validation";
+import { InternalServerException, NotFoundException } from "../utils/appError";
+import WorkspaceModel from "../models/workspace.model";
+import MemberModel from "../models/member.model";
 
 export const createWorkspaceController = asyncHandler(
   async (req: Request, res: Response) => {
@@ -57,13 +59,37 @@ export const getWorkspaceByIdController = asyncHandler(
     const workspaceId = workspaceIdSchema.parse(req.params.id);
     const userId = req.user?._id;
 
-    await getMemberRoleInWorkspace(userId, workspaceId);
+    // First check if workspace exists
+    const workspace = await WorkspaceModel.findById(workspaceId);
+    if (!workspace) {
+      throw new NotFoundException("Workspace not found");
+    }
 
-    const { workspace } = await getWorkspaceByIdService(workspaceId);
+    // Check if user is a member and get their role
+    const { role } = await getMemberRoleInWorkspace(userId, workspaceId);
+    if (!role?.name) {
+      throw new InternalServerException("Invalid role data structure");
+    }
+    roleGuard(role.name, [Permissions.VIEW_ONLY]);
+
+    // Get workspace with populated members including permissions
+    const members = await MemberModel.find({
+      workspaceId,
+    })
+      .populate("userId", "name email profilePicture")
+      .populate({
+        path: "role",
+        select: "name permissions",
+      });
+
+    const workspaceWithMembers = {
+      ...workspace.toObject(),
+      members,
+    };
 
     return res.status(HTTPSTATUS.OK).json({
       message: "Workspace fetched successfully",
-      workspace,
+      workspace: workspaceWithMembers,
     });
   }
 );
@@ -90,6 +116,12 @@ export const getWorkspaceAnalyticsController = asyncHandler(
   async (req: Request, res: Response) => {
     const workspaceId = workspaceIdSchema.parse(req.params.id);
     const userId = req.user?._id;
+
+    // First check if workspace exists
+    const workspace = await WorkspaceModel.findById(workspaceId);
+    if (!workspace) {
+      throw new NotFoundException("Workspace not found");
+    }
 
     const { role } = await getMemberRoleInWorkspace(userId, workspaceId);
     roleGuard(role.name, [Permissions.VIEW_ONLY]);

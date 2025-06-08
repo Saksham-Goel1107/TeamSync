@@ -1,5 +1,6 @@
 export const Roles = {
   OWNER: "OWNER",
+  CO_OWNER: "CO_OWNER",
   ADMIN: "ADMIN",
   MEMBER: "MEMBER",
 } as const;
@@ -28,3 +29,6 @@ export const Permissions = {
 } as const;
 
 export type PermissionType = keyof typeof Permissions;
+
+// Type-safe enum values
+export type Permissions = typeof Permissions[keyof typeof Permissions];

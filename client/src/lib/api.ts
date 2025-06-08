@@ -158,6 +158,21 @@ export const transferWorkspaceOwnershipMutationFn = async ({
   return response.data;
 };
 
+export const promoteToCoOwnerMutationFn = async ({
+  workspaceId,
+  memberId,
+}: {
+  workspaceId: string;
+  memberId: string;
+}) => {
+  const confirmationText = "I understand that co-owners have extensive permissions";
+  const response = await API.post(`/member/workspace/${workspaceId}/promote-co-owner`, {
+    memberId,
+    confirmationText,
+  });
+  return response.data;
+};
+
 //********* */
 //********* PROJECTS
 export const createProjectMutationFn = async ({

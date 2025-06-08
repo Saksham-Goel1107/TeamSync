@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Roles } from "../enums/role.enum";
 import MemberModel from "../models/member.model";
 import RoleModel from "../models/roles-permission.model";
@@ -6,19 +7,189 @@ import UserModel from "../models/user.model";
 import {
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
+  InternalServerException,
 } from "../utils/appError";
+
+const getRoleHierarchyLevel = (role: string): number => {
+  switch (role) {
+    case Roles.OWNER:
+      return 4;
+    case Roles.CO_OWNER:
+      return 3;
+    case Roles.ADMIN:
+      return 2;
+    case Roles.MEMBER:
+      return 1;
+    default:
+      return 0;
+  }
+};
+
+const canModifyRole = (requestingRole: string, targetRole: string): boolean => {
+  const requestingLevel = getRoleHierarchyLevel(requestingRole);
+  const targetLevel = getRoleHierarchyLevel(targetRole);
+
+  // Owner can modify all roles
+  if (requestingRole === Roles.OWNER) {
+    return true;
+  }
+
+  // No one can modify users of the same role level
+  if (requestingLevel === targetLevel) {
+    return false;
+  }
+
+  // Co-owner can only modify admin and member roles (roles with lower hierarchy)
+  if (requestingRole === Roles.CO_OWNER) {
+    return targetLevel < requestingLevel;
+  }
+
+  // Admin can only modify member roles (roles with lower hierarchy)
+  if (requestingRole === Roles.ADMIN) {
+    return targetLevel < requestingLevel;
+  }
+
+  // Members can't modify any roles
+  return false;
+};
 
 export const getMemberRoleInWorkspace = async (
   userId: string,
   workspaceId: string
 ) => {
-  const member = await MemberModel.findOne({
-    userId,
-    workspaceId,
-  }).populate("role");
+  console.log('Raw IDs received:', { userId, workspaceId, 
+    userIdType: typeof userId, 
+    workspaceIdType: typeof workspaceId 
+  });
+
+  // Convert string IDs to ObjectIds if needed
+  let userObjectId: mongoose.Types.ObjectId;
+  let workspaceObjectId: mongoose.Types.ObjectId;
+
+  try {
+    if (typeof userId === 'string') {
+      userObjectId = new mongoose.Types.ObjectId(userId);
+    } else if ((userId as any) instanceof mongoose.Types.ObjectId) {
+      userObjectId = userId as mongoose.Types.ObjectId;
+    } else if (userId && typeof userId === 'object' && 'toString' in userId && typeof (userId as any).toString === 'function') {
+      userObjectId = new mongoose.Types.ObjectId((userId as any).toString());
+    } else {
+      throw new BadRequestException("Invalid user ID format");
+    }
+
+    if (typeof workspaceId === 'string') {
+      workspaceObjectId = new mongoose.Types.ObjectId(workspaceId);
+    } else if ((workspaceId as any) instanceof mongoose.Types.ObjectId) {
+      workspaceObjectId = workspaceId as mongoose.Types.ObjectId;
+    } else if (workspaceId && typeof workspaceId === 'object' && 'toString' in workspaceId && typeof (workspaceId as any).toString === 'function') {
+      workspaceObjectId = new mongoose.Types.ObjectId((workspaceId as any).toString());
+    } else {
+      throw new BadRequestException("Invalid workspace ID format");
+    }
+  } catch (error) {
+    console.error('Error converting IDs:', error);
+    throw new BadRequestException("Invalid user or workspace ID format");
+  }
+
+  console.log('Looking up member with converted IDs:', {
+    userId: userObjectId?.toString(),
+    workspaceId: workspaceObjectId?.toString()
+  });
+
+  // First find the member
+  let member = await MemberModel.findOne({
+    userId: userObjectId,
+    workspaceId: workspaceObjectId,
+  });
 
   if (!member) {
-    throw new NotFoundException("You are not a member of this workspace");
+    // Let's check if there are any members in this workspace at all
+    const allMembers = await MemberModel.find({ workspaceId: workspaceObjectId });
+    console.log('No member found. All workspace members:', allMembers.map(m => ({
+      userId: m.userId.toString(),
+      memberId: (m._id as mongoose.Types.ObjectId).toString()
+    })));
+
+    throw new ForbiddenException("You are not a member of this workspace");
+  }
+
+  console.log('Found member:', {
+    memberId: (member._id as mongoose.Types.ObjectId).toString(),
+    userId: member.userId.toString(),
+    workspaceId: member.workspaceId.toString(),
+    roleId: member.role?.toString() || null
+  });
+
+  // Handle member with missing role by assigning default MEMBER role
+  if (!member.role) {
+    console.log("Member found with no role, assigning default MEMBER role:", member._id);
+    const defaultRole = await RoleModel.findOne({ name: Roles.MEMBER });
+    if (!defaultRole) {
+      throw new InternalServerException("Default member role not found. Please run role seeder.");
+    }
+    
+    // Update the member with default role using findByIdAndUpdate to ensure proper type handling
+    await MemberModel.findByIdAndUpdate(member._id, { role: defaultRole._id });
+    
+    // Re-fetch member to get updated state
+    member = await MemberModel.findById(member._id);
+    if (!member || !member.role) {
+      throw new InternalServerException("Failed to update member role");
+    }
+  }
+
+  // Store the role ID for debugging
+  const roleIdBeforePopulate = member.role?.toString();
+
+  // Try to find the role directly first to verify it exists
+  const roleExists = await RoleModel.findById(roleIdBeforePopulate);
+  if (!roleExists) {
+    console.log('Role document not found, attempting to repair with default MEMBER role');
+    const defaultRole = await RoleModel.findOne({ name: Roles.MEMBER });
+    if (!defaultRole) {
+      throw new InternalServerException("Default member role not found. Please run role seeder.");
+    }
+    
+    // Update the member with default role
+    await MemberModel.findByIdAndUpdate(member._id, { role: defaultRole._id });
+    member = await MemberModel.findById(member._id);
+  }
+
+  // Then populate the role field explicitly
+  try {
+    if (!member) {
+      throw new InternalServerException("Member is null before population");
+    }
+    await member.populate({
+      path: "role",
+      select: "name permissions"
+    });
+    
+    console.log('Role population result:', {
+      roleBeforePopulate: roleIdBeforePopulate,
+      populatedRole: member.role
+    });
+  } catch (error) {
+    console.error('Population error:', error);
+    throw new InternalServerException("Role population failed: " + (error as Error).message);
+  }
+
+  if (!member.role || typeof member.role === 'string') {
+    console.error("Role population resulted in invalid state:", {
+      memberId: member._id,
+      roleId: member.role
+    });
+    throw new InternalServerException("Role population failed: invalid result type");
+  }
+
+  // Validate role structure
+  if (!member.role.name || !Array.isArray(member.role.permissions)) {
+    console.error("Invalid role properties:", {
+      roleName: member.role.name,
+      permissions: member.role.permissions
+    });
+    throw new InternalServerException("Invalid role data structure: invalid role properties");
   }
 
   return { role: member.role };
@@ -60,20 +231,15 @@ export const removeMemberService = async (
     throw new BadRequestException("You are not a member of this workspace");
   }
 
-  // Only owners and admins can remove members
-  if (
-    requestingMember.role.name !== Roles.OWNER &&
-    requestingMember.role.name !== Roles.ADMIN
-  ) {
-    throw new BadRequestException("You don't have permission to remove members");
-  }
+  // Role-based removal restrictions
+  const requestingRole = requestingMember.role.name;
+  const targetRole = memberToRemove.role.name;
 
-  // Admins cannot remove other admins
-  if (
-    requestingMember.role.name === Roles.ADMIN &&
-    memberToRemove.role.name === Roles.ADMIN
-  ) {
-    throw new BadRequestException("Admins cannot remove other admins");
+  // Check if requesting user has high enough role to modify target
+  if (!canModifyRole(requestingRole, targetRole)) {
+    throw new BadRequestException(
+      `Users with role ${requestingRole} cannot remove users with role ${targetRole}`
+    );
   }
 
   // Remove the member
@@ -212,8 +378,9 @@ export const transferOwnershipService = async (
     throw new NotFoundException("New owner must be a member of the workspace");
   }
 
-  if (newOwner.role.name !== Roles.ADMIN) {
-    throw new BadRequestException("Ownership can only be transferred to an admin");
+  // Only allow transfer to admin or co-owner
+  if (newOwner.role.name !== Roles.ADMIN && newOwner.role.name !== Roles.CO_OWNER) {
+    throw new BadRequestException("Ownership can only be transferred to an admin or co-owner");
   }
 
   // Get roles
@@ -274,5 +441,143 @@ export const transferOwnershipService = async (
 
   return {
     message: "Workspace ownership transferred successfully",
+  };
+};
+
+export const promoteToCoOwnerService = async (
+  workspaceId: string,
+  memberId: string,
+  requestingUserId: string,
+  confirmationText: string
+) => {
+  // Verify the confirmation text
+  const expectedConfirmation = "I understand that co-owners have extensive permissions";
+  if (confirmationText !== expectedConfirmation) {
+    throw new BadRequestException(
+      "Please confirm that you understand the implications of promoting to co-owner"
+    );
+  }
+
+  const workspace = await WorkspaceModel.findById(workspaceId);
+  if (!workspace) {
+    throw new NotFoundException("Workspace not found");
+  }
+
+  // Get requesting user's role
+  const requestingMember = await MemberModel.findOne({
+    userId: requestingUserId,
+    workspaceId,
+  }).populate("role");
+
+  if (!requestingMember) {
+    throw new BadRequestException("You are not a member of this workspace");
+  }
+
+  // Only owners can promote to co-owner
+  if (requestingMember.role.name !== Roles.OWNER) {
+    throw new BadRequestException("Only the workspace owner can promote members to co-owner");
+  }
+
+  // Get the member to promote
+  const memberToPromote = await MemberModel.findOne({
+    userId: memberId,
+    workspaceId,
+  }).populate("role");
+
+  if (!memberToPromote) {
+    throw new NotFoundException("Member not found");
+  }
+
+  // Cannot promote owner or existing co-owner
+  if (
+    memberToPromote.role.name === Roles.OWNER ||
+    memberToPromote.role.name === Roles.CO_OWNER
+  ) {
+    throw new BadRequestException(
+      `Cannot promote ${memberToPromote.role.name.toLowerCase()} to co-owner`
+    );
+  }
+
+  // Get co-owner role
+  const coOwnerRole = await RoleModel.findOne({ name: Roles.CO_OWNER });
+  if (!coOwnerRole) {
+    throw new InternalServerException("Co-owner role not found");
+  }
+
+  // Update the member's role to co-owner
+  await MemberModel.findByIdAndUpdate(memberToPromote._id, {
+    role: coOwnerRole._id,
+  });
+
+  return {
+    message: "Member successfully promoted to co-owner",
+  };
+};
+
+export const changeMemberRoleService = async (
+  workspaceId: string,
+  memberId: string,
+  newRoleName: keyof typeof Roles,
+  requestingUserId: string
+) => {
+  const workspace = await WorkspaceModel.findById(workspaceId);
+  if (!workspace) {
+    throw new NotFoundException("Workspace not found");
+  }
+
+  // Get requesting user's role
+  const requestingMember = await MemberModel.findOne({
+    userId: requestingUserId,
+    workspaceId,
+  }).populate("role");
+
+  if (!requestingMember) {
+    throw new BadRequestException("You are not a member of this workspace");
+  }
+
+  // Get the member to change
+  const memberToChange = await MemberModel.findOne({
+    userId: memberId,
+    workspaceId,
+  }).populate("role");
+
+  if (!memberToChange) {
+    throw new NotFoundException("Member not found");
+  }
+
+  // Check if requesting user has high enough role to modify target's current role
+  if (!canModifyRole(requestingMember.role.name, memberToChange.role.name)) {
+    throw new BadRequestException(
+      `Users with role ${requestingMember.role.name} cannot modify users with role ${memberToChange.role.name}`
+    );
+  }
+
+  // Check if requesting user has high enough role to assign the new role
+  if (!canModifyRole(requestingMember.role.name, newRoleName)) {
+    throw new BadRequestException(
+      `Users with role ${requestingMember.role.name} cannot assign the ${newRoleName} role`
+    );
+  }
+
+  // Get the new role
+  const newRole = await RoleModel.findOne({ name: newRoleName });
+  if (!newRole) {
+    throw new InternalServerException(`Role ${newRoleName} not found`);
+  }
+
+  // If trying to assign CO_OWNER role, require confirmation
+  if (newRoleName === Roles.CO_OWNER) {
+    throw new BadRequestException(
+      "Please use the dedicated promoteToCoOwner endpoint for co-owner promotion"
+    );
+  }
+
+  // Update the member's role
+  await MemberModel.findByIdAndUpdate(memberToChange._id, {
+    role: newRole._id,
+  });
+
+  return {
+    message: `Member role updated to ${newRoleName}`,
   };
 };

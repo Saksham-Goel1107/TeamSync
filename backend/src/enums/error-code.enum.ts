@@ -10,6 +10,7 @@ export const ErrorCodeEnum = {
 
   // Access Control Errors
   ACCESS_UNAUTHORIZED: "ACCESS_UNAUTHORIZED",
+  FORBIDDEN: "FORBIDDEN",
 
   // Validation and Resource Errors
   VALIDATION_ERROR: "VALIDATION_ERROR",

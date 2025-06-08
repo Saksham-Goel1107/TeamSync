@@ -26,6 +26,7 @@ import {
   removeMemberMutationFn,
   leaveWorkspaceMutationFn,
   transferWorkspaceOwnershipMutationFn,
+  promoteToCoOwnerMutationFn,
 } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { Permissions } from "@/constant";
@@ -64,6 +65,12 @@ const AllMembers = () => {
     onOpenDialog: onOpenTransferDialog,
     onCloseDialog: onCloseTransferDialog,
   } = useConfirmDialog("transfer-ownership");
+  
+  const {
+    open: openCoOwnerPrompt,
+    onOpenDialog: onOpenCoOwnerPromptDialog,
+    onCloseDialog: onCloseCoOwnerPromptDialog,
+  } = useConfirmDialog("co-owner-prompt");
 
   const { data, isPending } = useGetWorkspaceMembers(workspaceId);
   const members = (data?.members || []) as Member[];
@@ -77,6 +84,7 @@ const AllMembers = () => {
 
   const [memberToRemove, setMemberToRemove] = React.useState<SelectedMember | null>(null);
   const [memberToTransferTo, setMemberToTransferTo] = React.useState<SelectedMember | null>(null);
+  const [memberToPromote, setMemberToPromote] = React.useState<SelectedMember | null>(null);
 
   const { mutateAsync: changeRole, isPending: isChangingRole } = useMutation({
     mutationFn: changeWorkspaceMemberRoleMutationFn,
@@ -104,6 +112,13 @@ const AllMembers = () => {
     onError: () => {
       queryClient.invalidateQueries({ queryKey: ["members", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["userWorkspaces"] });
+    }
+  });
+  
+  const { isPending: isPromoting } = useMutation({
+    mutationFn: promoteToCoOwnerMutationFn,
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["members", workspaceId] });
     }
   });
 
@@ -156,6 +171,17 @@ const AllMembers = () => {
     const newRole = roles.find(r => r._id === roleId);
     if (!newRole) return;
 
+    // If promoting to co-owner, show confirmation prompt first
+    if (newRole.name === "CO_OWNER") {
+      setMemberToPromote({
+        id: memberId,
+        name: member.userId.name,
+      });
+      onOpenCoOwnerPromptDialog();
+      return;
+    }
+
+    // For other roles, proceed with the change directly
     const payload = {
       workspaceId,
       data: { roleId, memberId },
@@ -254,6 +280,45 @@ const AllMembers = () => {
       onCloseTransferDialog();
     }
   };
+  
+  const handlePromoteToCoOwner = async () => {
+    if (!memberToPromote || !workspaceId) return;
+
+    try {
+      // Find the co-owner role ID
+      const coOwnerRole = roles.find(r => r.name === "CO_OWNER");
+      if (!coOwnerRole) {
+        throw new Error("Co-owner role not found");
+      }
+      
+      const payload = {
+        workspaceId,
+        data: { roleId: coOwnerRole._id, memberId: memberToPromote.id },
+      };
+
+      await changeRole(payload);
+      
+      const toastOptions: ToastOptions = {
+        title: "Co-Owner Added",
+        description: `${memberToPromote.name} has been promoted to co-owner`,
+        variant: "success",
+      };
+      toast(toastOptions);
+      
+      queryClient.invalidateQueries({ queryKey: ["members", workspaceId] });
+      onCloseCoOwnerPromptDialog();
+    } catch (error) {
+      console.error('Promote to co-owner error:', error);
+      const apiError = error as APIError;
+      const toastOptions: ToastOptions = {
+        title: "Error",
+        description: apiError.response?.data?.message || "Failed to promote to co-owner",
+        variant: "destructive",
+      };
+      toast(toastOptions);
+      onCloseCoOwnerPromptDialog();
+    }
+  };
 
   return (
     <>
@@ -308,9 +373,13 @@ const AllMembers = () => {
           const canRemove =
             canManageWorkspace &&
             !isCurrentUser &&
-            member.role.name !== "OWNER";
+            member.role.name !== "OWNER" &&
+            // Prevent co-owners from removing other co-owners
+            !(currentMember?.role.name === "CO_OWNER" && member.role.name === "CO_OWNER") &&
+            // Prevent admins from removing other admins or co-owners
+            !(currentMember?.role.name === "ADMIN" && (member.role.name === "ADMIN" || member.role.name === "CO_OWNER"));
           const canBecomeOwner =
-            member.role.name === "ADMIN" && isOwner && !isCurrentUser;
+            member.role.name === "CO_OWNER" && isOwner && !isCurrentUser;
 
           return (
             <div
@@ -365,6 +434,7 @@ const AllMembers = () => {
                     </Button>
                   )}
 
+
                   <Popover>
                     <PopoverTrigger asChild>
                       <Button
@@ -377,19 +447,33 @@ const AllMembers = () => {
                           isChangingRole ||
                           !canChangeMemberRole ||
                           isCurrentUser ||
-                          member.role.name === "OWNER"
+                          member.role.name === "OWNER" ||
+                          // Disable for co-owners trying to manage other co-owners
+                          (currentMember?.role.name === "CO_OWNER" && member.role.name === "CO_OWNER") ||
+                          // Disable for admins trying to manage other admins
+                          (currentMember?.role.name === "ADMIN" && member.role.name === "ADMIN")
                         }
                       >
                         {member.role.name?.toLowerCase()}{" "}
                         {canChangeMemberRole &&
                           !isCurrentUser &&
-                          member.role.name !== "OWNER" && (
+                          member.role.name !== "OWNER" &&
+                          // Don't show dropdown for co-owners managing other co-owners
+                          !(currentMember?.role.name === "CO_OWNER" && member.role.name === "CO_OWNER") &&
+                          // Don't show dropdown for admins managing other admins
+                          !(currentMember?.role.name === "ADMIN" && member.role.name === "ADMIN") && (
                             <ChevronDown className="text-muted-foreground" />
                           )}
                       </Button>
                     </PopoverTrigger>
 
-                    {canChangeMemberRole && !isCurrentUser && member.role.name !== "OWNER" && (
+                    {canChangeMemberRole && 
+                     !isCurrentUser && 
+                     member.role.name !== "OWNER" &&
+                     // Prevent co-owners from modifying other co-owners
+                     !(currentMember?.role.name === "CO_OWNER" && member.role.name === "CO_OWNER") &&
+                     // Prevent admins from modifying other admins
+                     !(currentMember?.role.name === "ADMIN" && member.role.name === "ADMIN") && (
                       <PopoverContent className="p-0" align="end">
                         <Command>
                           <CommandInput
@@ -486,6 +570,28 @@ const AllMembers = () => {
         description={
           memberToTransferTo
             ? `Are you sure you want to transfer ownership to ${memberToTransferTo.name}? This will make them the new owner and you will become a member. This action cannot be undone.`
+            : ""
+        }
+      />
+
+      <ConfirmDialog
+        isOpen={openCoOwnerPrompt}
+        isLoading={isPromoting}
+        onClose={onCloseCoOwnerPromptDialog}
+        onConfirm={handlePromoteToCoOwner}
+        title="Promote to Co-Owner"
+        description={
+          memberToPromote
+            ? `Are you sure you want to promote ${memberToPromote.name} to co-owner?
+
+Co-owners have extensive permissions including:
+• Managing workspace settings
+• Adding/removing members
+• Changing member roles
+• Creating and managing all projects
+• Accessing all workspace data
+
+Only promote trusted users to co-owner. This gives them significant control over your workspace.`
             : ""
         }
       />
