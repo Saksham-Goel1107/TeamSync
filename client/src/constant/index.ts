@@ -28,6 +28,7 @@ export const Permissions = {
   CREATE_TASK: "CREATE_TASK",
   EDIT_TASK: "EDIT_TASK",
   DELETE_TASK: "DELETE_TASK",
+  SEND_MESSAGES: "SEND_MESSAGES",
   VIEW_ONLY: "VIEW_ONLY",
 } as const;
 

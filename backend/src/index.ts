@@ -18,6 +18,9 @@ import workspaceRoutes from "./routes/workspace.route";
 import memberRoutes from "./routes/member.route";
 import projectRoutes from "./routes/project.route";
 import taskRoutes from "./routes/task.route";
+import chatRoutes from "./routes/chat.route";
+import { createServer } from "http";
+import { initializeSocketIO } from "./services/socket.service";
 
 const app = express();
 const BASE_PATH = config.BASE_PATH;
@@ -70,10 +73,18 @@ app.use(`${BASE_PATH}/workspace`, isAuthenticated, workspaceRoutes);
 app.use(`${BASE_PATH}/member`, isAuthenticated, memberRoutes);
 app.use(`${BASE_PATH}/project`, isAuthenticated, projectRoutes);
 app.use(`${BASE_PATH}/task`, isAuthenticated, taskRoutes);
+app.use(`${BASE_PATH}`, isAuthenticated, chatRoutes);
 
 app.use(errorHandler);
 
-app.listen(config.PORT, async () => {
+// Create HTTP server instance
+const httpServer = createServer(app);
+
+// Initialize Socket.IO with the HTTP server
+initializeSocketIO(httpServer);
+
+httpServer.listen(config.PORT, async () => {
   console.log(`Server listening on port ${config.PORT} in ${config.NODE_ENV}`);
+  console.log(`Socket.IO server initialized`);
   await connectDatabase();
 });
